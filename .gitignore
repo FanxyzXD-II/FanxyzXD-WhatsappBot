@@ -1,4 +1,4 @@
-node_modules
-session
+node_modules/
 .env
-database/*.json
+session/
+auth_info/
