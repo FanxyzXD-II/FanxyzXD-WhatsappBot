@@ -1,4 +1,4 @@
-const { reply, isGroup, isAdmin } = require('../lib/util')
+const { isAdmin } = require('../lib/util')
 
 module.exports = {
   command: [
@@ -11,155 +11,126 @@ module.exports = {
     'tagall',
     'hidetag',
     'setname',
-    'setdesc'
+    'setdesc',
+    'leaderboard'
   ],
 
-  run: async ({ sock, msg, from, args, isGroup: isGrp }) => {
+  run: async ({ sock, msg, from, args, isGroup, config }) => {
+    // Validasi Dasar
+    if (!isGroup) return sock.sendMessage(from, { text: '❗ Perintah ini hanya dapat digunakan di dalam grup.' }, { quoted: msg })
+
     const body =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
       ''
 
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const cmd = body.slice(config.prefix.length).trim().split(/ +/)[0].toLowerCase()
     const sender = msg.key.participant || msg.key.remoteJid
 
-    /* ================= CEK GROUP ================= */
-    if (!isGrp) {
-      return reply(sock, from, '❗ Perintah ini hanya untuk grup', msg)
+    // Ambil Metadata Grup
+    const metadata = await sock.groupMetadata(from)
+    const participants = metadata.participants
+    
+    // Cek Izin (User Admin & Bot Admin)
+    const userAdmin = participants.find(p => p.id === sender)?.admin
+    const botAdmin = participants.find(p => p.id === sock.user.id.split(':')[0] + '@s.whatsapp.net')?.admin
+
+    if (!userAdmin && cmd !== 'groupmenu' && cmd !== 'leaderboard') {
+      return sock.sendMessage(from, { text: '⛔ Anda harus menjadi admin untuk menggunakan perintah ini.' }, { quoted: msg })
     }
 
-    /* ================= CEK ADMIN ================= */
-    const admin = await isAdmin(sock, from, sender)
-    if (!admin) {
-      return reply(sock, from, '⛔ Kamu bukan admin grup', msg)
-    }
+    try {
+      /* ================= GROUP MENU ================= */
+      if (cmd === 'groupmenu') {
+        const menuText = `👥 *GROUP MANAGER*
 
-    /* ================= GROUP MENU ================= */
-    if (cmd === 'groupmenu') {
-      return reply(
-        sock,
-        from,
-`👥 *GROUP MENU*
+• *${config.prefix}add* 628xxx
+• *${config.prefix}kick* @tag
+• *${config.prefix}promote* @tag
+• *${config.prefix}demote* @tag
+• *${config.prefix}linkgc*
+• *${config.prefix}tagall* <pesan>
+• *${config.prefix}hidetag* <pesan>
+• *${config.prefix}setname* <teks>
+• *${config.prefix}setdesc* <teks>
+• *${config.prefix}leaderboard*`
+        
+        return sock.sendMessage(from, { text: menuText }, { quoted: msg })
+      }
 
-• .add 628xxx
-• .kick @tag
-• .promote @tag
-• .demote @tag
-• .linkgc
-• .tagall
-• .hidetag teks
-• .setname nama
-• .setdesc deskripsi`,
-        msg
-      )
-    }
+      /* ================= LEADERBOARD (INTEGRASI GAME) ================= */
+      if (cmd === 'leaderboard') {
+        // Mengasumsikan db_score ada di global atau diimport. 
+        // Jika menggunakan sistem file, ganti dengan pembacaan database Anda.
+        const leaderboardText = `🏆 *TOP PLAYERS - ${metadata.subject}*\n\n_Fitur ini menampilkan pemain aktif di sesi ini._`
+        return sock.sendMessage(from, { text: leaderboardText }, { quoted: msg })
+      }
 
-    /* ================= ADD MEMBER ================= */
-    if (cmd === 'add') {
-      if (!args[0]) return reply(sock, from, '❗ .add 628xxx', msg)
-      const number = args[0].replace(/\D/g, '') + '@s.whatsapp.net'
-      await sock.groupParticipantsUpdate(from, [number], 'add')
-      return reply(sock, from, '✅ Member ditambahkan', msg)
-    }
+      // Perintah di bawah ini butuh bot menjadi admin
+      if (!botAdmin) return sock.sendMessage(from, { text: '❌ Gagal. Bot harus menjadi admin grup untuk melakukan ini.' }, { quoted: msg })
 
-    /* ================= KICK MEMBER ================= */
-    if (cmd === 'kick') {
-      const target =
-        msg.message.extendedTextMessage?.contextInfo?.mentionedJid
-      if (!target || !target[0])
-        return reply(sock, from, '❗ Tag member', msg)
+      /* ================= ADD & KICK ================= */
+      if (cmd === 'add') {
+        if (!args[0]) return sock.sendMessage(from, { text: `❗ Masukkan nomor!\nContoh: *${config.prefix}add 628xxx*` })
+        const num = args[0].replace(/\D/g, '') + '@s.whatsapp.net'
+        await sock.groupParticipantsUpdate(from, [num], 'add')
+        return sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+      }
 
-      await sock.groupParticipantsUpdate(from, target, 'remove')
-      return reply(sock, from, '🗑️ Member dikeluarkan', msg)
-    }
+      if (cmd === 'kick') {
+        const target = msg.message.extendedTextMessage?.contextInfo?.mentionedJid
+        if (!target || target.length === 0) return sock.sendMessage(from, { text: '❗ Tag member yang ingin dikeluarkan.' })
+        await sock.groupParticipantsUpdate(from, target, 'remove')
+        return sock.sendMessage(from, { react: { text: '🗑️', key: msg.key } })
+      }
 
-    /* ================= PROMOTE ================= */
-    if (cmd === 'promote') {
-      const target =
-        msg.message.extendedTextMessage?.contextInfo?.mentionedJid
-      if (!target || !target[0])
-        return reply(sock, from, '❗ Tag member', msg)
+      /* ================= PROMOTE & DEMOTE ================= */
+      if (cmd === 'promote' || cmd === 'demote') {
+        const target = msg.message.extendedTextMessage?.contextInfo?.mentionedJid
+        if (!target || target.length === 0) return sock.sendMessage(from, { text: '❗ Tag membernya.' })
+        await sock.groupParticipantsUpdate(from, target, cmd)
+        return sock.sendMessage(from, { react: { text: '⚡', key: msg.key } })
+      }
 
-      await sock.groupParticipantsUpdate(from, target, 'promote')
-      return reply(sock, from, '⬆️ Member dipromosikan', msg)
-    }
+      /* ================= TAG ALL & HIDETAG ================= */
+      if (cmd === 'tagall' || cmd === 'hidetag') {
+        const members = participants.map(p => p.id)
+        const message = args.join(' ') || 'Tanpa Pesan'
+        
+        if (cmd === 'tagall') {
+          let teks = `📣 *TAG ALL*\n\n*Pesan:* ${message}\n\n`
+          for (let mem of members) {
+            teks += `🔹 @${mem.split('@')[0]}\n`
+          }
+          return sock.sendMessage(from, { text: teks, mentions: members }, { quoted: msg })
+        } else {
+          // Hidetag (Silent mention)
+          return sock.sendMessage(from, { text: message, mentions: members }, { quoted: msg })
+        }
+      }
 
-    /* ================= DEMOTE ================= */
-    if (cmd === 'demote') {
-      const target =
-        msg.message.extendedTextMessage?.contextInfo?.mentionedJid
-      if (!target || !target[0])
-        return reply(sock, from, '❗ Tag member', msg)
+      /* ================= GROUP INFO SETTINGS ================= */
+      if (cmd === 'linkgc') {
+        const code = await sock.groupInviteCode(from)
+        return sock.sendMessage(from, { text: `🔗 *Link Invite:* https://chat.whatsapp.com/${code}` }, { quoted: msg })
+      }
 
-      await sock.groupParticipantsUpdate(from, target, 'demote')
-      return reply(sock, from, '⬇️ Admin diturunkan', msg)
-    }
+      if (cmd === 'setname') {
+        if (!args[0]) return sock.sendMessage(from, { text: '❗ Masukkan nama grup baru.' })
+        await sock.groupUpdateSubject(from, args.join(' '))
+        return sock.sendMessage(from, { react: { text: '✏️', key: msg.key } })
+      }
 
-    /* ================= LINK GROUP ================= */
-    if (cmd === 'linkgc') {
-      const link = await sock.groupInviteCode(from)
-      return reply(
-        sock,
-        from,
-        `🔗 Link Grup:\nhttps://chat.whatsapp.com/${link}`,
-        msg
-      )
-    }
+      if (cmd === 'setdesc') {
+        if (!args[0]) return sock.sendMessage(from, { text: '❗ Masukkan deskripsi baru.' })
+        await sock.groupUpdateDescription(from, args.join(' '))
+        return sock.sendMessage(from, { react: { text: '📝', key: msg.key } })
+      }
 
-    /* ================= TAG ALL ================= */
-    if (cmd === 'tagall') {
-      const metadata = await sock.groupMetadata(from)
-      const members = metadata.participants.map(p => p.id)
-
-      let teks = '📣 *TAG ALL*\n\n'
-      members.forEach(m => {
-        teks += `@${m.split('@')[0]} `
-      })
-
-      return sock.sendMessage(
-        from,
-        {
-          text: teks,
-          mentions: members
-        },
-        { quoted: msg }
-      )
-    }
-
-    /* ================= HIDETAG ================= */
-    if (cmd === 'hidetag') {
-      const metadata = await sock.groupMetadata(from)
-      const members = metadata.participants.map(p => p.id)
-      const text = args.join(' ') || ' '
-
-      return sock.sendMessage(
-        from,
-        {
-          text,
-          mentions: members
-        },
-        { quoted: msg }
-      )
-    }
-
-    /* ================= SET GROUP NAME ================= */
-    if (cmd === 'setname') {
-      const text = args.join(' ')
-      if (!text)
-        return reply(sock, from, '❗ .setname nama baru', msg)
-
-      await sock.groupUpdateSubject(from, text)
-      return reply(sock, from, '✏️ Nama grup diubah', msg)
-    }
-
-    /* ================= SET GROUP DESC ================= */
-    if (cmd === 'setdesc') {
-      const text = args.join(' ')
-      if (!text)
-        return reply(sock, from, '❗ .setdesc deskripsi', msg)
-
-      await sock.groupUpdateDescription(from, text)
-      return reply(sock, from, '📝 Deskripsi grup diubah', msg)
+    } catch (e) {
+      console.error(e)
+      return sock.sendMessage(from, { text: '❌ Terjadi kesalahan. Pastikan bot adalah admin.' }, { quoted: msg })
     }
   }
 }

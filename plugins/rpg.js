@@ -1,13 +1,20 @@
 const fs = require('fs')
 const path = require('path')
-const { reply } = require('../lib/util')
 
-/* ================= FILE DATABASE ================= */
-const dbPath = path.join(__dirname, '../database/rpg.json')
+/* ================= DATABASE SYSTEM ================= */
+const dbDir = path.join(__dirname, '../database')
+const dbPath = path.join(dbDir, 'rpg.json')
+
+// Pastikan folder database ada
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true })
 
 function loadDB() {
-  if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, '{}')
-  return JSON.parse(fs.readFileSync(dbPath))
+  try {
+    return fs.existsSync(dbPath) ? JSON.parse(fs.readFileSync(dbPath)) : {}
+  } catch (e) {
+    console.error('Error loading RPG DB:', e)
+    return {}
+  }
 }
 
 function saveDB(data) {
@@ -16,15 +23,16 @@ function saveDB(data) {
 
 let rpg = loadDB()
 
-/* ================= USER INIT ================= */
+/* ================= USER LOGIC ================= */
 function getUser(jid) {
   if (!rpg[jid]) {
     rpg[jid] = {
       level: 1,
       exp: 0,
-      gold: 0,
+      gold: 50, // Modal awal
       health: 100,
-      potion: 1
+      potion: 2,
+      lastHunt: 0
     }
     saveDB(rpg)
   }
@@ -32,10 +40,10 @@ function getUser(jid) {
 }
 
 function levelUp(user) {
-  const need = user.level * 100
+  const need = user.level * 150
   if (user.exp >= need) {
     user.level++
-    user.exp = 0
+    user.exp -= need
     user.health = 100
     return true
   }
@@ -43,144 +51,95 @@ function levelUp(user) {
 }
 
 module.exports = {
-  command: [
-    'rpgmenu',
-    'status',
-    'hunt',
-    'adventure',
-    'heal',
-    'inventory'
-  ],
+  command: ['rpgmenu', 'status', 'hunt', 'adventure', 'heal', 'inventory', 'buy'],
 
-  run: async ({ sock, msg, from }) => {
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      ''
-
+  run: async ({ sock, msg, from, config }) => {
+    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
     const sender = msg.key.participant || msg.key.remoteJid
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const p = config.prefix
+    const cmd = body.slice(p.length).trim().split(/ +/)[0].toLowerCase()
     const user = getUser(sender)
 
-    /* ================= MENU ================= */
-    if (cmd === 'rpgmenu') {
-      return reply(
-        sock,
-        from,
-`🗡️ *RPG MENU*
+    try {
+      /* ================= MENU ================= */
+      if (cmd === 'rpgmenu') {
+        const menu = `🗡️ *FANXYZXD RPG SYSTEM*
 
-• .status
-• .hunt
-• .adventure
-• .heal
-• .inventory`,
-        msg
-      )
-    }
-
-    /* ================= STATUS ================= */
-    if (cmd === 'status') {
-      return reply(
-        sock,
-        from,
-`📊 *STATUS RPG*
-
-Level : ${user.level}
-EXP   : ${user.exp}/${user.level * 100}
-Gold  : ${user.gold}
-Health: ${user.health}
-Potion: ${user.potion}`,
-        msg
-      )
-    }
-
-    /* ================= HUNT ================= */
-    if (cmd === 'hunt') {
-      if (user.health <= 0) {
-        return reply(sock, from, '💀 Kamu kehabisan darah\nGunakan .heal', msg)
+• *${p}status* → Cek level & darah
+• *${p}hunt* → Berburu monster (Easy)
+• *${p}adventure* → Petualangan (Hard)
+• *${p}heal* → Gunakan 1 potion
+• *${p}inventory* → Cek barang
+• *${p}buy potion* → Harga 100 gold`
+        return sock.sendMessage(from, { text: menu }, { quoted: msg })
       }
 
-      const exp = Math.floor(Math.random() * 30) + 10
-      const gold = Math.floor(Math.random() * 50) + 10
-      const dmg = Math.floor(Math.random() * 20) + 5
+      /* ================= STATUS ================= */
+      if (cmd === 'status' || cmd === 'inventory') {
+        const stat = `📊 *RPG PROFILE - @${sender.split('@')[0]}*
 
-      user.exp += exp
-      user.gold += gold
-      user.health -= dmg
-
-      const up = levelUp(user)
-      saveDB(rpg)
-
-      return reply(
-        sock,
-        from,
-`🏹 *HUNT BERHASIL*
-
-+EXP   : ${exp}
-+Gold  : ${gold}
--Darah : ${dmg}
-${up ? '🎉 LEVEL UP!' : ''}`,
-        msg
-      )
-    }
-
-    /* ================= ADVENTURE ================= */
-    if (cmd === 'adventure') {
-      if (user.health < 30) {
-        return reply(sock, from, '⚠️ Darah terlalu rendah\nGunakan .heal', msg)
+❤️ Health: ${user.health}
+🌟 Level: ${user.level}
+✨ EXP: ${user.exp} / ${user.level * 150}
+💰 Gold: ${user.gold}
+🧪 Potion: ${user.potion}`
+        return sock.sendMessage(from, { text: stat, mentions: [sender] }, { quoted: msg })
       }
 
-      const win = Math.random() > 0.4
-      if (!win) {
-        user.health -= 30
+      /* ================= HUNT ================= */
+      if (cmd === 'hunt') {
+        if (user.health < 20) return sock.sendMessage(from, { text: '💀 Darahmu terlalu rendah! Heal dulu.' }, { quoted: msg })
+        
+        // Cooldown 1 menit
+        const cd = 60000 
+        if (Date.now() - user.lastHunt < cd) {
+          const s = Math.ceil((cd - (Date.now() - user.lastHunt)) / 1000)
+          return sock.sendMessage(from, { text: `⏳ Tunggu ${s} detik lagi untuk berburu.` }, { quoted: msg })
+        }
+
+        await sock.sendMessage(from, { react: { text: '🏹', key: msg.key } })
+        
+        const exp = Math.floor(Math.random() * 50) + 20
+        const gold = Math.floor(Math.random() * 40) + 10
+        const dmg = Math.floor(Math.random() * 15) + 5
+
+        user.exp += exp
+        user.gold += gold
+        user.health -= dmg
+        user.lastHunt = Date.now()
+
+        const up = levelUp(user)
         saveDB(rpg)
-        return reply(sock, from, '💥 Kamu kalah\n-Darah 30', msg)
+
+        return sock.sendMessage(from, { text: `🏹 *HUNT RESULT*\n\n✨ +${exp} EXP\n💰 +${gold} Gold\n🩸 -${dmg} Health\n${up ? '🎊 *LEVEL UP!*' : ''}` }, { quoted: msg })
       }
 
-      const exp = 80
-      const gold = 100
-      user.exp += exp
-      user.gold += gold
-
-      const up = levelUp(user)
-      saveDB(rpg)
-
-      return reply(
-        sock,
-        from,
-`⚔️ *ADVENTURE SUKSES*
-
-+EXP  : ${exp}
-+Gold : ${gold}
-${up ? '🔥 LEVEL UP!' : ''}`,
-        msg
-      )
-    }
-
-    /* ================= HEAL ================= */
-    if (cmd === 'heal') {
-      if (user.potion <= 0) {
-        return reply(sock, from, '❌ Potion habis', msg)
+      /* ================= SHOP ================= */
+      if (cmd === 'buy') {
+        if (args[0] === 'potion') {
+          if (user.gold < 100) return sock.sendMessage(from, { text: '❌ Gold kamu tidak cukup (Butuh 100 Gold).' })
+          user.gold -= 100
+          user.potion += 1
+          saveDB(rpg)
+          return sock.sendMessage(from, { text: '✅ Berhasil membeli 1 Potion.' }, { quoted: msg })
+        }
+        return sock.sendMessage(from, { text: `🛒 *RPG SHOP*\n\n1. Potion - 100 Gold\nKetik: *${p}buy potion*` })
       }
 
-      user.potion--
-      user.health = 100
-      saveDB(rpg)
+      /* ================= HEAL ================= */
+      if (cmd === 'heal') {
+        if (user.potion < 1) return sock.sendMessage(from, { text: '❌ Kamu tidak punya Potion. Beli di shop.' })
+        if (user.health >= 100) return sock.sendMessage(from, { text: '❤️ Darahmu masih penuh.' })
+        
+        user.potion -= 1
+        user.health = 100
+        saveDB(rpg)
+        await sock.sendMessage(from, { react: { text: '🧪', key: msg.key } })
+        return sock.sendMessage(from, { text: '💊 Darah berhasil dipulihkan!' }, { quoted: msg })
+      }
 
-      return reply(sock, from, '💊 Darah pulih penuh', msg)
-    }
-
-    /* ================= INVENTORY ================= */
-    if (cmd === 'inventory') {
-      return reply(
-        sock,
-        from,
-`🎒 *INVENTORY*
-
-Potion : ${user.potion}
-Gold   : ${user.gold}`,
-        msg
-      )
+    } catch (e) {
+      console.error(e)
     }
   }
 }

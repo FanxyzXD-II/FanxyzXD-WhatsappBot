@@ -1,10 +1,9 @@
-const { reply } = require('../lib/util')
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys')
 
-// Memory anonymous (RAM). Aman & ringan.
-// Kalau mau permanen, bisa ganti ke JSON.
+// Memory storage
 const anon = {
-  waiting: [],        // user yang menunggu pasangan
-  pair: {}            // jid -> jid pasangan
+  waiting: [],
+  pair: {}
 }
 
 function removeWaiting(jid) {
@@ -15,16 +14,19 @@ function endChat(jid, sock) {
   const partner = anon.pair[jid]
   if (partner) {
     delete anon.pair[partner]
-    sock.sendMessage(partner, { text: '❌ Partner meninggalkan chat.' })
+    sock.sendMessage(partner, { text: '🛑 Partner telah mengakhiri chat.' })
   }
   delete anon.pair[jid]
   removeWaiting(jid)
 }
 
 module.exports = {
-  command: ['anon', 'next', 'stop'],
+  command: ['anon', 'next', 'stop', 'skip', 'sendprofile'],
 
-  run: async ({ sock, msg, from, args }) => {
+  run: async ({ sock, msg, from, args, config, isGroup, pushname }) => {
+    // Hindari penggunaan anonymous di dalam grup
+    if (isGroup) return
+
     const body =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
@@ -32,86 +34,72 @@ module.exports = {
       msg.message.videoMessage?.caption ||
       ''
 
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const cmd = body.slice(config.prefix.length).trim().split(/ +/)[0].toLowerCase()
 
-    /* ================= START ANON ================= */
+    /* ================= START / SEARCH ================= */
     if (cmd === 'anon') {
-      // sudah berpasangan?
-      if (anon.pair[from]) {
-        return reply(sock, from, '⚠️ Kamu masih dalam anonymous chat.\nKetik .stop untuk keluar.', msg)
-      }
+      if (anon.pair[from]) return sock.sendMessage(from, { text: `⚠️ Kamu masih dalam chat!\nKetik *${config.prefix}stop* untuk keluar.` }, { quoted: msg })
+      if (anon.waiting.includes(from)) return sock.sendMessage(from, { text: '⏳ Masih menunggu partner...' }, { quoted: msg })
 
-      // sudah menunggu?
-      if (anon.waiting.includes(from)) {
-        return reply(sock, from, '⏳ Kamu sudah menunggu partner...', msg)
-      }
-
-      // cari partner
       if (anon.waiting.length > 0) {
         const partner = anon.waiting.shift()
         anon.pair[from] = partner
         anon.pair[partner] = from
 
-        await sock.sendMessage(from, { text: '✅ Partner ditemukan! Mulai chat.' })
-        await sock.sendMessage(partner, { text: '✅ Partner ditemukan! Mulai chat.' })
+        const startMsg = `✅ Partner ditemukan!\n\nKetik *${config.prefix}next* untuk cari baru\nKetik *${config.prefix}sendprofile* untuk kirim profil WA Anda.`
+        await sock.sendMessage(from, { text: startMsg })
+        await sock.sendMessage(partner, { text: startMsg })
       } else {
         anon.waiting.push(from)
-        return reply(sock, from, '⏳ Menunggu partner anonymous...', msg)
+        await sock.sendMessage(from, { text: '⏳ Mencari partner... Mohon tunggu.' }, { quoted: msg })
       }
       return
     }
 
-    /* ================= NEXT ================= */
-    if (cmd === 'next') {
+    /* ================= SEND PROFILE ================= */
+    if (cmd === 'sendprofile') {
+      const partner = anon.pair[from]
+      if (!partner) return sock.sendMessage(from, { text: '❌ Kamu harus punya pasangan dulu!' })
+
+      // Mengirim VCard (Kontak)
+      const vcard = 'BEGIN:VCARD\n' +
+                    'VERSION:3.0\n' +
+                    `FN:${pushname}\n` +
+                    `TEL;type=CELL;type=VOICE;waid=${from.split('@')[0]}:+${from.split('@')[0]}\n` +
+                    'END:VCARD'
+
+      await sock.sendMessage(partner, {
+        contacts: {
+          displayName: pushname,
+          contacts: [{ vcard }]
+        }
+      })
+      
+      return sock.sendMessage(from, { text: '✅ Profil kamu telah dikirim ke partner.' })
+    }
+
+    /* ================= NEXT / SKIP ================= */
+    if (cmd === 'next' || cmd === 'skip') {
       endChat(from, sock)
-      return reply(sock, from, '🔄 Mencari partner baru...\nKetik .anon', msg)
+      anon.waiting.push(from)
+      return sock.sendMessage(from, { text: '🔄 Mencari partner baru...' })
     }
 
     /* ================= STOP ================= */
     if (cmd === 'stop') {
+      if (!anon.pair[from] && !anon.waiting.includes(from)) return sock.sendMessage(from, { text: '❌ Kamu tidak sedang dalam sesi.' })
       endChat(from, sock)
-      return reply(sock, from, '🛑 Anonymous chat dihentikan.', msg)
+      return sock.sendMessage(from, { text: '🛑 Sesi anonymous dihentikan.' })
     }
 
-    /* ================= FORWARD MESSAGE ================= */
-    // Kalau user sedang anonymous & bukan command
-    if (anon.pair[from] && !body.startsWith('.')) {
+    /* ================= RELAY SYSTEM ================= */
+    if (anon.pair[from] && !body.startsWith(config.prefix)) {
       const partner = anon.pair[from]
-
-      // forward semua jenis pesan dasar
-      if (msg.message.conversation || msg.message.extendedTextMessage) {
-        return sock.sendMessage(partner, { text: body })
-      }
-
-      if (msg.message.imageMessage) {
-        return sock.sendMessage(
-          partner,
-          {
-            image: await sock.downloadMediaMessage(msg),
-            caption: msg.message.imageMessage.caption || ''
-          }
-        )
-      }
-
-      if (msg.message.videoMessage) {
-        return sock.sendMessage(
-          partner,
-          {
-            video: await sock.downloadMediaMessage(msg),
-            caption: msg.message.videoMessage.caption || ''
-          }
-        )
-      }
-
-      if (msg.message.audioMessage) {
-        return sock.sendMessage(
-          partner,
-          {
-            audio: await sock.downloadMediaMessage(msg),
-            mimetype: 'audio/ogg; codecs=opus',
-            ptt: true
-          }
-        )
+      try {
+        // Forward message secara langsung (teks & media)
+        await sock.sendMessage(partner, { forward: msg })
+      } catch (e) {
+        console.error('Relay Error:', e)
       }
     }
   }

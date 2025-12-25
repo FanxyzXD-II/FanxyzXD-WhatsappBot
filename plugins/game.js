@@ -1,87 +1,104 @@
-const { reply } = require('../lib/util')
-
-// penyimpanan skor sementara (RAM)
-const score = {}
-
-function getUser(jid) {
-  if (!score[jid]) score[jid] = { tebak: 0 }
-  return score[jid]
-}
+// Penyimpanan skor dan sesi game (RAM)
+const db_score = {}
+const sessions = {}
 
 module.exports = {
   command: [
     'gamemenu',
     'tebakangka',
-    'tebak'
+    'tebak',
+    'skor'
   ],
 
-  run: async ({ sock, msg, from, args }) => {
+  run: async ({ sock, msg, from, args, config }) => {
     const body =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
       ''
 
     const sender = msg.key.participant || msg.key.remoteJid
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const cmd = body.slice(config.prefix.length).trim().split(/ +/)[0].toLowerCase()
 
-    /* ================= GAME MENU ================= */
-    if (cmd === 'gamemenu') {
-      return reply(
-        sock,
-        from,
-`🎮 *GAME MENU*
+    // Inisialisasi skor user jika belum ada
+    if (!db_score[sender]) db_score[sender] = { point: 0, win: 0 }
 
-• .tebakangka → tebak angka 1-10
-• .tebak <angka> → jawab tebakan`,
-        msg
-      )
-    }
+    try {
+      /* ================= GAME MENU ================= */
+      if (cmd === 'gamemenu') {
+        const menuText = `🎮 *GAME MENU*
 
-    /* ================= START GAME ================= */
-    if (cmd === 'tebakangka') {
-      const angka = Math.floor(Math.random() * 10) + 1
-      score[sender] = {
-        answer: angka,
-        playing: true
+• *${config.prefix}tebakangka* → Mulai game baru
+• *${config.prefix}tebak <angka>* → Jawab tebakan
+• *${config.prefix}skor* → Lihat poin kamu
+
+_Cara main: Bot akan memikirkan angka 1-10, tugasmu adalah menebaknya dengan benar!_`
+        
+        return sock.sendMessage(from, { text: menuText }, { quoted: msg })
       }
 
-      return reply(
-        sock,
-        from,
-        `🎲 Aku memikirkan angka *1–10*\nKetik: .tebak <angka>`,
-        msg
-      )
-    }
-
-    /* ================= JAWABAN ================= */
-    if (cmd === 'tebak') {
-      if (!score[sender] || !score[sender].playing) {
-        return reply(
-          sock,
-          from,
-          '❗ Kamu belum memulai game\nKetik .tebakangka',
-          msg
-        )
+      /* ================= LIHAT SKOR ================= */
+      if (cmd === 'skor') {
+        const user = db_score[sender]
+        return sock.sendMessage(from, { 
+          text: `🏆 *STATISTIK KAMU*\n\n👤 User: @${sender.split('@')[0]}\n💰 Poin: ${user.point}\n✅ Total Menang: ${user.win}`,
+          mentions: [sender]
+        }, { quoted: msg })
       }
 
-      const jawaban = parseInt(args[0])
-      if (!jawaban) {
-        return reply(sock, from, '❗ Masukkan angka', msg)
+      /* ================= START GAME ================= */
+      if (cmd === 'tebakangka') {
+        // Jika sudah ada sesi aktif
+        if (sessions[sender]) {
+          return sock.sendMessage(from, { text: `⚠️ Kamu masih punya sesi aktif!\nKetik *${config.prefix}tebak* untuk menjawab.` }, { quoted: msg })
+        }
+
+        const angkaRahasia = Math.floor(Math.random() * 10) + 1
+        sessions[sender] = {
+          answer: angkaRahasia,
+          attempts: 0
+        }
+
+        await sock.sendMessage(from, { react: { text: '🎲', key: msg.key } })
+        return sock.sendMessage(from, { 
+          text: `🎲 Aku memikirkan angka antara *1 sampai 10*.\n\nBisa tebak angka berapa itu?\nKetik: *${config.prefix}tebak <angka>*` 
+        }, { quoted: msg })
       }
 
-      if (jawaban === score[sender].answer) {
-        score[sender].playing = false
-        score[sender].tebak = (score[sender].tebak || 0) + 1
+      /* ================= JAWABAN ================= */
+      if (cmd === 'tebak') {
+        const session = sessions[sender]
+        if (!session) {
+          return sock.sendMessage(from, { text: `❌ Kamu belum memulai permainan.\nKetik *${config.prefix}tebakangka* untuk mulai.` }, { quoted: msg })
+        }
 
-        return reply(
-          sock,
-          from,
-          `🎉 *BENAR!*\nSkor kamu: ${score[sender].tebak}`,
-          msg
-        )
-      } else {
-        return reply(sock, from, '❌ Salah, coba lagi!', msg)
+        const input = parseInt(args[0])
+        if (isNaN(input) || input < 1 || input > 10) {
+          return sock.sendMessage(from, { text: '❗ Masukkan angka valid antara 1 - 10!' }, { quoted: msg })
+        }
+
+        session.attempts++
+
+        if (input === session.answer) {
+          // Menang
+          const bonusPoin = 100
+          db_score[sender].point += bonusPoin
+          db_score[sender].win += 1
+          
+          const winMsg = `🎉 *CONGRATS!*\n\nAngka benar: *${session.answer}*\nPercobaan: ${session.attempts}x\n\n💰 Kamu mendapatkan *+${bonusPoin}* poin!\nTotal Poin: ${db_score[sender].point}`
+          
+          delete sessions[sender] // Hapus sesi setelah menang
+          await sock.sendMessage(from, { react: { text: '🎊', key: msg.key } })
+          return sock.sendMessage(from, { text: winMsg }, { quoted: msg })
+        } else {
+          // Salah (Beri Petunjuk)
+          const hint = input < session.answer ? 'Lebih besar ⬆️' : 'Lebih kecil ⬇️'
+          return sock.sendMessage(from, { text: `❌ Salah! Coba lagi.\n\nPetunjuk: *${hint}*` }, { quoted: msg })
+        }
       }
+
+    } catch (e) {
+      console.error('Game Error:', e)
     }
   }
 }

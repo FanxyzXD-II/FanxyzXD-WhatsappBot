@@ -1,15 +1,6 @@
 const axios = require('axios')
-const { reply } = require('../lib/util')
 
-/*
-Template yang dipakai (contoh):
-- neon
-- glitch
-- blackpink
-- gaming
-- silver
-*/
-
+// Daftar template yang didukung
 const templates = {
   neon: 'https://ephoto360.com/neon-text-effect-online-879.html',
   glitch: 'https://ephoto360.com/create-digital-glitch-text-effects-online-767.html',
@@ -19,68 +10,73 @@ const templates = {
 }
 
 module.exports = {
-  command: [
-    'ephoto',
-    'ephotomenu',
-    'neon',
-    'glitch',
-    'blackpink',
-    'gaming',
-    'silver'
-  ],
+  // Command otomatis mengambil dari key templates + menu utama
+  command: ['ephoto', 'ephotomenu', ...Object.keys(templates)],
 
-  run: async ({ sock, msg, from, args }) => {
+  run: async ({ sock, msg, from, args, config }) => {
     const body =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
       ''
 
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    // Mengambil command tanpa prefix
+    const cmd = body.slice(config.prefix.length).trim().split(/ +/)[0].toLowerCase()
     const text = args.join(' ')
 
     /* ================= MENU ================= */
     if (cmd === 'ephotomenu' || cmd === 'ephoto') {
-      let list = '🖼️ *EPHOTO MENU*\n\n'
+      let menuText = '🖼️ *EPHOTO MENU*\n\n'
       for (let t in templates) {
-        list += `• .${t} <teks>\n`
+        menuText += `• *${config.prefix}${t}* <teks>\n`
       }
-      return reply(sock, from, list, msg)
+      menuText += `\n_Contoh: ${config.prefix}neon FanxyzXD_`
+      return sock.sendMessage(from, { text: menuText }, { quoted: msg })
     }
 
-    /* ================= VALIDASI ================= */
-    if (!templates[cmd]) return
-    if (!text)
-      return reply(
-        sock,
-        from,
-        `❗ Masukkan teks\nContoh:\n.${cmd} FanxyzXD`,
-        msg
-      )
+    /* ================= VALIDASI & EKSEKUSI ================= */
+    if (templates[cmd]) {
+      if (!text) {
+        return sock.sendMessage(
+          from, 
+          { text: `⚠️ Masukkan teks yang ingin dibuat!\nContoh: *${config.prefix}${cmd} FanxyzXD*` }, 
+          { quoted: msg }
+        )
+      }
 
-    try {
-      reply(sock, from, '⏳ Membuat gambar...', msg)
+      try {
+        // Kirim reaksi sedang diproses
+        await sock.sendMessage(from, { react: { text: '⏳', key: msg.key } })
 
-      // API publik (contoh lolhuman)
-      const res = await axios.get(
-        `https://api.lolhuman.xyz/api/ephoto?apikey=demo&url=${encodeURIComponent(
-          templates[cmd]
-        )}&text=${encodeURIComponent(text)}`
-      )
+        // Menggunakan API (Pastikan API Key valid, 'demo' biasanya memiliki limit)
+        const apiUrl = `https://api.lolhuman.xyz/api/ephoto360/${cmd}?apikey=${config.lolkey || 'demo'}&text=${encodeURIComponent(text)}`
+        
+        // Catatan: Jika endpoint di atas tidak bekerja, gunakan fallback url template:
+        // const apiUrl = `https://api.lolhuman.xyz/api/ephoto?apikey=demo&url=${encodeURIComponent(templates[cmd])}&text=${encodeURIComponent(text)}`
 
-      if (!res.data || !res.data.result)
-        return reply(sock, from, '❌ Gagal membuat gambar', msg)
+        const res = await axios.get(apiUrl)
 
-      await sock.sendMessage(
-        from,
-        {
-          image: { url: res.data.result },
-          caption: `✨ *EPHOTO RESULT*\nStyle: ${cmd}`
-        },
-        { quoted: msg }
-      )
-    } catch (e) {
-      console.error(e)
-      reply(sock, from, '❌ Error saat membuat ephoto', msg)
+        if (!res.data || !res.data.result) {
+            throw new Error('Invalid API Response')
+        }
+
+        await sock.sendMessage(
+          from,
+          {
+            image: { url: res.data.result },
+            caption: `✨ *EPHOTO RESULT*\n🎨 *Style:* ${cmd.toUpperCase()}\n📝 *Teks:* ${text}`
+          },
+          { quoted: msg }
+        )
+
+        // Kirim reaksi sukses
+        await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+
+      } catch (e) {
+        console.error('Ephoto Error:', e)
+        await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+        return sock.sendMessage(from, { text: '❌ Gagal membuat gambar. API sedang sibuk atau limit.' }, { quoted: msg })
+      }
     }
   }
 }

@@ -1,5 +1,4 @@
 const axios = require('axios')
-const { reply } = require('../lib/util')
 
 module.exports = {
   command: [
@@ -11,104 +10,82 @@ module.exports = {
     'memvideo'
   ],
 
-  run: async ({ sock, msg, from }) => {
+  run: async ({ sock, msg, from, config }) => {
+    // Mengambil teks dari berbagai tipe pesan (teks, caption foto/video)
     const body =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
+      msg.message.videoMessage?.caption ||
       ''
 
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const p = config.prefix
+    const cmd = body.slice(p.length).trim().split(/ +/)[0].toLowerCase()
 
     /* ================= MENU ================= */
     if (cmd === 'videomenu' || cmd === 'randomvideo') {
-      return reply(
-        sock,
-        from,
-`🎥 *RANDOM VIDEO MENU*
+      const menuText = `🎥 *RANDOM VIDEO MENU*
 
-• .asupan
-• .tiktokrandom
-• .animevideo
-• .memvideo`,
-        msg
-      )
+• *${p}asupan* → Video asupan random
+• *${p}tiktokrandom* → Video TikTok random
+• *${p}animevideo* → Video edit anime random
+• *${p}memvideo* → Video meme random`
+
+      return sock.sendMessage(from, { text: menuText }, { quoted: msg })
     }
 
     try {
-      /* ================= ASUPAN ================= */
+      // Kirim reaksi sedang memproses
+      await sock.sendMessage(from, { react: { text: '⏳', key: msg.key } })
+
+      let videoUrl = ''
+      let caption = ''
+      const apiKey = config.lolkey || 'demo'
+
+      /* ================= LOGIC SELECTOR ================= */
       if (cmd === 'asupan') {
-        reply(sock, from, '⏳ Mengambil video...', msg)
+        const res = await axios.get(`https://api.lolhuman.xyz/api/random/asupan?apikey=${apiKey}`)
+        videoUrl = res.data.result
+        caption = '🎵 *Asupan Random*'
+      } 
+      
+      else if (cmd === 'tiktokrandom') {
+        const res = await axios.get(`https://api.lolhuman.xyz/api/random/tiktok?apikey=${apiKey}`)
+        videoUrl = res.data.result
+        caption = '🎶 *TikTok Random*'
+      } 
+      
+      else if (cmd === 'animevideo') {
+        const res = await axios.get(`https://api.lolhuman.xyz/api/random/animevideo?apikey=${apiKey}`)
+        videoUrl = res.data.result
+        caption = '🎌 *Anime Edit Random*'
+      } 
+      
+      else if (cmd === 'memvideo') {
+        const res = await axios.get(`https://api.lolhuman.xyz/api/random/memevideo?apikey=${apiKey}`)
+        videoUrl = res.data.result
+        caption = '😂 *Meme Video Random*'
+      }
 
-        const res = await axios.get(
-          'https://api.lolhuman.xyz/api/random/asupan?apikey=demo'
-        )
-
-        return sock.sendMessage(
+      // Kirim Video ke User
+      if (videoUrl) {
+        await sock.sendMessage(
           from,
           {
-            video: { url: res.data.result },
-            caption: '🎵 Asupan Random'
+            video: { url: videoUrl },
+            caption: caption
           },
           { quoted: msg }
         )
+        
+        // Kirim reaksi berhasil
+        await sock.sendMessage(from, { react: { text: '🎥', key: msg.key } })
       }
 
-      /* ================= TIKTOK RANDOM ================= */
-      if (cmd === 'tiktokrandom') {
-        reply(sock, from, '⏳ Mengambil TikTok...', msg)
-
-        const res = await axios.get(
-          'https://api.lolhuman.xyz/api/random/tiktok?apikey=demo'
-        )
-
-        return sock.sendMessage(
-          from,
-          {
-            video: { url: res.data.result },
-            caption: '🎶 TikTok Random'
-          },
-          { quoted: msg }
-        )
-      }
-
-      /* ================= ANIME VIDEO ================= */
-      if (cmd === 'animevideo') {
-        reply(sock, from, '⏳ Mengambil anime...', msg)
-
-        const res = await axios.get(
-          'https://api.lolhuman.xyz/api/random/animevideo?apikey=demo'
-        )
-
-        return sock.sendMessage(
-          from,
-          {
-            video: { url: res.data.result },
-            caption: '🎌 Anime Video'
-          },
-          { quoted: msg }
-        )
-      }
-
-      /* ================= MEME VIDEO ================= */
-      if (cmd === 'memvideo') {
-        reply(sock, from, '⏳ Mengambil meme...', msg)
-
-        const res = await axios.get(
-          'https://api.lolhuman.xyz/api/random/memevideo?apikey=demo'
-        )
-
-        return sock.sendMessage(
-          from,
-          {
-            video: { url: res.data.result },
-            caption: '😂 Meme Video'
-          },
-          { quoted: msg }
-        )
-      }
     } catch (e) {
-      console.error(e)
-      return reply(sock, from, '❌ Gagal mengambil video', msg)
+      console.error('Error RandomVideo:', e)
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return sock.sendMessage(from, { text: '❌ Gagal mengambil video. Pastikan API Key valid atau coba lagi nanti.' }, { quoted: msg })
     }
   }
 }

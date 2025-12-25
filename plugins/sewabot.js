@@ -1,13 +1,21 @@
 const fs = require('fs')
 const path = require('path')
-const { reply, isOwner } = require('../lib/util')
 
-/* ================= DATABASE ================= */
-const dbPath = path.join(__dirname, '../database/sewabot.json')
+/* ================= DATABASE SYSTEM ================= */
+const dbDir = path.join(__dirname, '../database')
+const dbPath = path.join(dbDir, 'sewabot.json')
+
+// Inisialisasi folder dan file database
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true })
 
 function loadDB() {
-  if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, '{}')
-  return JSON.parse(fs.readFileSync(dbPath))
+  try {
+    if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, '{}')
+    return JSON.parse(fs.readFileSync(dbPath))
+  } catch (e) {
+    console.error('Error loading Sewa DB:', e)
+    return {}
+  }
 }
 
 function saveDB(data) {
@@ -16,14 +24,10 @@ function saveDB(data) {
 
 let sewa = loadDB()
 
-function now() {
-  return Date.now()
-}
-
-/* ================= CHECK AKTIF ================= */
+/* ================= LOGIC CHECKER ================= */
 function isSewaAktif(jid) {
   if (!sewa[jid]) return false
-  if (now() > sewa[jid].expired) {
+  if (Date.now() > sewa[jid].expired) {
     delete sewa[jid]
     saveDB(sewa)
     return false
@@ -31,121 +35,99 @@ function isSewaAktif(jid) {
   return true
 }
 
+function formatTime(ms) {
+  let d = Math.floor(ms / (1000 * 60 * 60 * 24))
+  let h = Math.floor((ms % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+  let m = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))
+  return `${d} Hari, ${h} Jam, ${m} Menit`
+}
+
 module.exports = {
-  command: [
-    'sewabot',
-    'sewalist',
-    'addsewa',
-    'delsewa',
-    'ceksewa'
-  ],
+  command: ['sewabot', 'sewalist', 'addsewa', 'delsewa', 'ceksewa'],
 
-  run: async ({ sock, msg, from, args }) => {
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      ''
-
+  run: async ({ sock, msg, from, args, config }) => {
+    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
     const sender = msg.key.participant || msg.key.remoteJid
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const p = config.prefix
+    const cmd = body.slice(p.length).trim().split(/ +/)[0].toLowerCase()
+    
+    // Verifikasi Owner dari config
+    const isOwner = config.owner.includes(sender.split('@')[0])
 
     /* ================= MENU SEWA ================= */
     if (cmd === 'sewabot') {
-      return reply(
-        sock,
-        from,
-`💼 *SEWA BOT*
+      const infoSewa = `💼 *LAYANAN SEWA BOT*
 
-📌 Harga:
+📌 *Price List:*
 • 7 Hari  : Rp 5.000
 • 30 Hari : Rp 15.000
 • Permanen: Rp 30.000
 
-📞 Hubungi Owner untuk sewa
-Ketik: .ceksewa`,
-        msg
-      )
+📞 *Hubungi Owner:*
+wa.me/${config.owner[0]}
+
+Ketik *${p}ceksewa* untuk melihat sisa durasi di grup ini.`
+      return sock.sendMessage(from, { text: infoSewa }, { quoted: msg })
     }
 
     /* ================= CEK SEWA ================= */
     if (cmd === 'ceksewa') {
       if (!isSewaAktif(from)) {
-        return reply(sock, from, '❌ Bot belum disewa / masa aktif habis', msg)
+        return sock.sendMessage(from, { text: '❌ Grup ini belum terdaftar dalam list sewa atau masa aktif telah habis.' }, { quoted: msg })
       }
 
-      const s = sewa[from]
-      const sisa = Math.floor((s.expired - now()) / (1000 * 60 * 60 * 24))
-
-      return reply(
-        sock,
-        from,
-`✅ *SEWA AKTIF*
-
-Sisa waktu: ${sisa} hari`,
-        msg
-      )
+      const sisa = sewa[from].expired - Date.now()
+      return sock.sendMessage(from, { text: `✅ *STATUS SEWA AKTIF*\n\n⏳ *Sisa Waktu:* ${formatTime(sisa)}` }, { quoted: msg })
     }
 
-    /* ================= LIST SEWA ================= */
+    /* ================= LIST SEWA (OWNER) ================= */
     if (cmd === 'sewalist') {
-      if (!isOwner(sender)) return reply(sock, from, '⛔ Owner only', msg)
+      if (!isOwner) return sock.sendMessage(from, { text: '⛔ Perintah ini hanya untuk Owner.' })
 
-      let teks = '📋 *LIST SEWA BOT*\n\n'
-      let i = 1
-
+      let teks = '📋 *DAFTAR GRUP TERSEWA*\n\n'
+      let count = 0
       for (const jid in sewa) {
-        const sisa = Math.floor((sewa[jid].expired - now()) / (1000 * 60 * 60 * 24))
-        teks += `${i++}. ${jid.replace('@g.us','')}\n   ⏳ ${sisa} hari\n\n`
+        count++
+        const sisa = sewa[jid].expired - Date.now()
+        teks += `${count}. ID: ${jid}\n   ⏳ Expired: ${formatTime(sisa)}\n\n`
       }
-
-      return reply(sock, from, teks || 'Belum ada sewa', msg)
+      return sock.sendMessage(from, { text: count > 0 ? teks : ' Belum ada grup yang menyewa.' }, { quoted: msg })
     }
 
-    /* ================= ADD SEWA ================= */
+    /* ================= ADD SEWA (OWNER) ================= */
     if (cmd === 'addsewa') {
-      if (!isOwner(sender)) return reply(sock, from, '⛔ Owner only', msg)
+      if (!isOwner) return sock.sendMessage(from, { text: '⛔ Perintah ini hanya untuk Owner.' })
 
-      const id = args[0]
-      const hari = parseInt(args[1])
+      const targetJid = args[0]
+      const durasiHari = parseInt(args[1])
 
-      if (!id || !hari)
-        return reply(
-          sock,
-          from,
-          '❗ Format:\n.addsewa id_grup hari\n\nContoh:\n.addsewa 120xxxxx@g.us 30',
-          msg
-        )
-
-      sewa[id] = {
-        expired: now() + hari * 24 * 60 * 60 * 1000
+      if (!targetJid || isNaN(durasiHari)) {
+        return sock.sendMessage(from, { text: `❗ *Format Salah*\n\nGunakan: *${p}addsewa* <id_grup> <jumlah_hari>\nContoh: *${p}addsewa 1203632@g.us 30*` }, { quoted: msg })
       }
 
+      sewa[targetJid] = {
+        expired: Date.now() + (durasiHari * 24 * 60 * 60 * 1000)
+      }
       saveDB(sewa)
 
-      return reply(
-        sock,
-        from,
-        `✅ Sewa ditambahkan\nID: ${id}\nDurasi: ${hari} hari`,
-        msg
-      )
+      await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+      return sock.sendMessage(from, { text: `✅ *BERHASIL TAMBAH SEWA*\n\n📍 Grup: ${targetJid}\n⏳ Durasi: ${durasiHari} Hari` }, { quoted: msg })
     }
 
-    /* ================= DELETE SEWA ================= */
+    /* ================= DELETE SEWA (OWNER) ================= */
     if (cmd === 'delsewa') {
-      if (!isOwner(sender)) return reply(sock, from, '⛔ Owner only', msg)
+      if (!isOwner) return sock.sendMessage(from, { text: '⛔ Perintah ini hanya untuk Owner.' })
 
-      const id = args[0]
-      if (!id || !sewa[id])
-        return reply(sock, from, '❌ ID tidak ditemukan', msg)
+      const targetJid = args[0]
+      if (!targetJid || !sewa[targetJid]) return sock.sendMessage(from, { text: '❌ ID Grup tidak ditemukan dalam database.' })
 
-      delete sewa[id]
+      delete sewa[targetJid]
       saveDB(sewa)
-
-      return reply(sock, from, `🗑️ Sewa dihapus: ${id}`, msg)
+      return sock.sendMessage(from, { text: `🗑️ Berhasil menghapus sewa untuk: ${targetJid}` }, { quoted: msg })
     }
   },
 
-  /* ================= MIDDLEWARE ================= */
+  /* Middleware untuk index.js agar perintah lain tidak jalan jika belum sewa */
   isAllowed: (jid) => {
     return isSewaAktif(jid)
   }

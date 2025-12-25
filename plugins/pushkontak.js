@@ -1,71 +1,70 @@
-const { reply, isOwner, isGroup } = require('../lib/util')
+const { delay } = require('@whiskeysockets/baileys')
 
 module.exports = {
   command: ['pushkontak', 'pushgc'],
 
-  run: async ({ sock, msg, from, args, isGroup: isGrp }) => {
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      ''
-
+  run: async ({ sock, msg, from, args, isGroup, config }) => {
     const sender = msg.key.participant || msg.key.remoteJid
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
-
+    
     /* ================= OWNER ONLY ================= */
-    if (!isOwner(sender)) {
-      return reply(sock, from, '⛔ Khusus OWNER bot', msg)
+    // Pastikan fungsi isOwner tersedia di lib/util atau sesuaikan dengan config
+    const isOwner = config.owner.includes(sender.split('@')[0])
+    if (!isOwner) {
+      return sock.sendMessage(from, { text: '⛔ Fitur ini khusus untuk Owner bot.' }, { quoted: msg })
     }
 
     /* ================= CEK GROUP ================= */
-    if (!isGrp) {
-      return reply(sock, from, '❗ Push kontak hanya di grup', msg)
+    if (!isGroup) {
+      return sock.sendMessage(from, { text: '❗ Perintah ini hanya dapat dilakukan di dalam grup.' }, { quoted: msg })
     }
 
-    /* ================= FORMAT ================= */
+    /* ================= MATERI PUSH (TEXT / MEDIA) ================= */
     const text = args.join(' ')
-    if (!text) {
-      return reply(
-        sock,
-        from,
-        `❗ Format salah\n\nContoh:\n.pushkontak Promo bot WA murah!`,
-        msg
-      )
+    const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage
+    
+    if (!text && !quoted) {
+      return sock.sendMessage(from, { 
+        text: `❗ *Format Salah*\n\nContoh:\n*${config.prefix}pushkontak* Halo kak, save nomor aku ya!\n\n_Atau balas (reply) gambar/video dengan caption perintah tersebut._` 
+      }, { quoted: msg })
     }
 
     /* ================= AMBIL MEMBER ================= */
     const metadata = await sock.groupMetadata(from)
     const members = metadata.participants
-      .filter(v => !v.id.includes('g.us'))
       .map(v => v.id)
+      .filter(v => v !== sock.user.id.split(':')[0] + '@s.whatsapp.net') // Kecualikan Bot
 
-    reply(
-      sock,
-      from,
-      `📤 *PUSH KONTAK DIMULAI*\nTotal target: ${members.length}`,
-      msg
-    )
+    await sock.sendMessage(from, { react: { text: '📤', key: msg.key } })
+    await sock.sendMessage(from, { 
+      text: `📤 *PUSH KONTAK DIMULAI*\n\n👥 *Total Target:* ${members.length}\n⏳ *Estimasi Selesai:* ${Math.ceil((members.length * 3000) / 60000)} Menit\n\n_Mohon jangan matikan bot hingga proses selesai._` 
+    }, { quoted: msg })
 
     let success = 0
     let failed = 0
 
-    /* ================= KIRIM PESAN ================= */
+    /* ================= PROSES KIRIM ================= */
     for (const jid of members) {
       try {
-        await sock.sendMessage(jid, { text })
+        if (quoted) {
+          // Jika push berupa media (reply media)
+          await sock.sendMessage(jid, { forward: msg.message.extendedTextMessage.contextInfo.quotedMessage, caption: text }, { quoted: null })
+        } else {
+          // Jika push berupa teks saja
+          await sock.sendMessage(jid, { text: text }, { quoted: null })
+        }
+        
         success++
-        await new Promise(r => setTimeout(r, 1200)) // delay aman
+        // Delay random 2-4 detik untuk keamanan akun
+        await delay(Math.floor(Math.random() * 2000) + 2000) 
       } catch (e) {
         failed++
       }
     }
 
-    /* ================= LAPORAN ================= */
-    reply(
-      sock,
-      from,
-      `✅ *PUSH SELESAI*\n\n✔️ Berhasil: ${success}\n❌ Gagal: ${failed}`,
-      msg
-    )
+    /* ================= LAPORAN AKHIR ================= */
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+    const report = `✅ *PUSH KONTAK SELESAI*\n\n📈 *Statistik:*\n✔️ Berhasil: ${success}\n❌ Gagal: ${failed}\n\n_Terima kasih telah menunggu!_`
+    
+    return sock.sendMessage(from, { text: report }, { quoted: msg })
   }
 }

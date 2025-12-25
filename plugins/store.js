@@ -1,72 +1,59 @@
 const fs = require('fs')
 const path = require('path')
-const { reply, isOwner } = require('../lib/util')
 
-/* ================= DATABASE PRODUK ================= */
-const dbPath = path.join(__dirname, '../database/store.json')
+/* ================= DATABASE SYSTEM ================= */
+const dbDir = path.join(__dirname, '../database')
+const dbPath = path.join(dbDir, 'store.json')
 
-if (!fs.existsSync(dbPath)) {
-  fs.writeFileSync(dbPath, JSON.stringify([], null, 2))
+// Inisialisasi folder database jika belum ada
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true })
+
+function loadProduk() {
+  try {
+    if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, JSON.stringify([], null, 2))
+    return JSON.parse(fs.readFileSync(dbPath))
+  } catch (e) {
+    console.error('Error loading Store DB:', e)
+    return []
+  }
 }
 
-const loadProduk = () => JSON.parse(fs.readFileSync(dbPath))
-const saveProduk = data =>
-  fs.writeFileSync(dbPath, JSON.stringify(data, null, 2))
+const saveProduk = data => fs.writeFileSync(dbPath, JSON.stringify(data, null, 2))
 
 module.exports = {
-  command: [
-    'store',
-    'listproduk',
-    'addproduk',
-    'delproduk',
-    'order',
-    'payment'
-  ],
+  command: ['store', 'listproduk', 'addproduk', 'delproduk', 'order', 'payment'],
 
   run: async ({ sock, msg, from, args, pushname, config }) => {
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      ''
-
-    const cmd = body.slice(1).split(' ')[0].toLowerCase()
+    const body = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
+    const p = config.prefix
+    const cmd = body.slice(p.length).trim().split(/ +/)[0].toLowerCase()
+    const sender = msg.key.participant || msg.key.remoteJid
+    
+    // Verifikasi Owner dari config
+    const isOwner = config.owner.includes(sender.split('@')[0])
 
     /* ================= LIST PRODUK ================= */
     if (cmd === 'store' || cmd === 'listproduk') {
       const produk = loadProduk()
+      if (produk.length === 0) return sock.sendMessage(from, { text: '🛒 *STORE INFO*\n\nMaaf, saat ini belum ada produk yang tersedia.' }, { quoted: msg })
 
-      if (produk.length === 0) {
-        return reply(sock, from, '🛒 Store masih kosong', msg)
-      }
-
-      let teks = '🛒 *DAFTAR PRODUK*\n\n'
-      produk.forEach((p, i) => {
-        teks += `📦 ${i + 1}. ${p.nama}\n`
-        teks += `💰 Harga: Rp${p.harga}\n`
-        teks += `📝 ${p.deskripsi}\n\n`
+      let teks = '🛒 *FANXYZXD STORE MENU*\n\n'
+      produk.forEach((item, i) => {
+        teks += `*${i + 1}. ${item.nama}*\n`
+        teks += `💰 Harga: Rp${item.harga}\n`
+        teks += `📝 Deskripsi: ${item.deskripsi}\n\n`
       })
-
-      teks += `Order:\n.order nama_produk`
-
-      return sock.sendMessage(from, { text: teks })
+      teks += `_Untuk memesan, ketik: *${p}order [nama_produk]*_`
+      return sock.sendMessage(from, { text: teks }, { quoted: msg })
     }
 
     /* ================= ADD PRODUK (OWNER) ================= */
     if (cmd === 'addproduk') {
-      if (!isOwner(msg.key.remoteJid, config.owner))
-        return reply(sock, from, '⛔ Owner only', msg)
+      if (!isOwner) return sock.sendMessage(from, { text: '⛔ Perintah ini khusus untuk Owner.' })
 
-      const teks = args.join(' ')
-      const split = teks.split('|')
-
-      if (split.length < 3) {
-        return reply(
-          sock,
-          from,
-          '❗ Format:\n.addproduk nama | harga | deskripsi',
-          msg
-        )
-      }
+      const input = args.join(' ')
+      const split = input.split('|')
+      if (split.length < 3) return sock.sendMessage(from, { text: `❗ *Format Salah*\n\nGunakan: *${p}addproduk* nama | harga | deskripsi` }, { quoted: msg })
 
       const [nama, harga, deskripsi] = split.map(v => v.trim())
       const produk = loadProduk()
@@ -74,91 +61,50 @@ module.exports = {
       produk.push({ nama, harga, deskripsi })
       saveProduk(produk)
 
-      return reply(
-        sock,
-        from,
-        `✅ Produk *${nama}* berhasil ditambahkan`,
-        msg
-      )
+      await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+      return sock.sendMessage(from, { text: `✅ Produk *${nama}* berhasil ditambahkan ke database.` }, { quoted: msg })
     }
 
     /* ================= DELETE PRODUK (OWNER) ================= */
     if (cmd === 'delproduk') {
-      if (!isOwner(msg.key.remoteJid, config.owner))
-        return reply(sock, from, '⛔ Owner only', msg)
-
-      if (!args[0])
-        return reply(sock, from, '❗ .delproduk nomor', msg)
+      if (!isOwner) return sock.sendMessage(from, { text: '⛔ Perintah ini khusus untuk Owner.' })
+      if (!args[0]) return sock.sendMessage(from, { text: `❗ Masukkan nomor produk!\nContoh: *${p}delproduk 1*` })
 
       const produk = loadProduk()
       const index = parseInt(args[0]) - 1
-
-      if (!produk[index])
-        return reply(sock, from, '❌ Produk tidak ditemukan', msg)
+      if (!produk[index]) return sock.sendMessage(from, { text: '❌ Produk tidak ditemukan.' })
 
       const hapus = produk.splice(index, 1)
       saveProduk(produk)
 
-      return reply(
-        sock,
-        from,
-        `🗑️ Produk *${hapus[0].nama}* dihapus`,
-        msg
-      )
+      await sock.sendMessage(from, { react: { text: '🗑️', key: msg.key } })
+      return sock.sendMessage(from, { text: `🗑️ Berhasil menghapus produk: *${hapus[0].nama}*` }, { quoted: msg })
     }
 
     /* ================= ORDER ================= */
     if (cmd === 'order') {
-      if (!args[0])
-        return reply(sock, from, '❗ .order nama_produk', msg)
+      if (!args[0]) return sock.sendMessage(from, { text: `❗ Masukkan nama produk!\nContoh: *${p}order Diamond*` })
 
       const produk = loadProduk()
-      const namaCari = args.join(' ').toLowerCase()
-      const item = produk.find(p =>
-        p.nama.toLowerCase().includes(namaCari)
-      )
+      const item = produk.find(v => v.nama.toLowerCase().includes(args.join(' ').toLowerCase()))
+      if (!item) return sock.sendMessage(from, { text: '❌ Produk tidak ditemukan dalam list.' })
 
-      if (!item)
-        return reply(sock, from, '❌ Produk tidak ditemukan', msg)
+      await sock.sendMessage(from, { react: { text: '⏳', key: msg.key } })
+      const invoice = `🛒 *ORDER BERHASIL*\n\n📦 *Produk:* ${item.nama}\n💰 *Harga:* Rp${item.harga}\n👤 *Pemesan:* ${pushname}\n\nSilahkan lakukan pembayaran dengan mengetik *${p}payment*`
+      await sock.sendMessage(from, { text: invoice }, { quoted: msg })
 
-      await reply(
-        sock,
-        from,
-        `🛒 *ORDER BERHASIL*
-📦 Produk: ${item.nama}
-💰 Harga: Rp${item.harga}
-
-Silakan lakukan pembayaran dengan perintah:
-.payment`,
-        msg
-      )
-
-      // kirim notif ke owner
-      for (const own of config.owner) {
-        await sock.sendMessage(own + '@s.whatsapp.net', {
-          text:
-`📥 ORDER BARU
-👤 ${pushname}
-📦 ${item.nama}
-💰 Rp${item.harga}`
+      // Notifikasi ke Owner
+      for (const ownerId of config.owner) {
+        await sock.sendMessage(ownerId + '@s.whatsapp.net', {
+          text: `📥 *ORDER BARU MASUK*\n\n👤 User: ${pushname}\n📦 Item: ${item.nama}\n💰 Harga: Rp${item.harga}\n📱 JID: ${sender}`
         })
       }
     }
 
     /* ================= PAYMENT INFO ================= */
     if (cmd === 'payment') {
-      return reply(
-        sock,
-        from,
-        `💳 *METODE PEMBAYARAN*
-
-• Dana : 08xxxxxxxxxx
-• OVO  : 08xxxxxxxxxx
-• Gopay: 08xxxxxxxxxx
-
-📸 Kirim bukti pembayaran ke owner`,
-        msg
-      )
+      const payInfo = `💳 *METODE PEMBAYARAN*\n\n• *DANA:* ${config.dana || '08xxxxxxxx'}\n• *OVO:* ${config.ovo || '08xxxxxxxx'}\n• *GOPAY:* ${config.gopay || '08xxxxxxxx'}\n\n📸 *Penting:* Kirim bukti transfer ke Owner bot untuk proses verifikasi.`
+      return sock.sendMessage(from, { text: payInfo }, { quoted: msg })
     }
   }
 }
